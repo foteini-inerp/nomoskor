@@ -104,7 +104,7 @@ def get_law_data_from_api(query):
         params["freetext"] = query
         
     try:
-        r = requests.get(url, params=params, headers=HEADERS, timeout=30)
+        r = requests.get(url, params=params, headers=HEADERS, timeout=15)
         data = r.json()
         # Έλεγχος αν βρέθηκαν εγγραφές
         if data.get('TotalRecords', 0) > 0:
@@ -228,7 +228,7 @@ def run_auditor(law_text, uploaded_files, opengov_text, metadata):
     
     try:
         # ΧΡΗΣΗ ΤΟΥ GEMINI 2.0 FLASH (ΔΙΟΡΘΩΘΗΚΕ)
-        model = genai.GenerativeModel('models/veo-3.0-generate-001') 
+        model = genai.GenerativeModel('models/gemini-pro-latest') 
         
         # Έλεγχος ετοιμότητας αρχείων
         if uploaded_files:
