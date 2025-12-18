@@ -2,9 +2,14 @@ import os
 import time
 import tempfile
 import shutil
+import re
+import json
+import urllib.parse
 from urllib.parse import urljoin, quote
 import requests
 from bs4 import BeautifulSoup
+from io import BytesIO
+from pypdf import PdfReader
 import streamlit as st
 import google.generativeai as genai
 from google.api_core import exceptions
@@ -14,7 +19,7 @@ from google.api_core import exceptions
 # =============================================================================
 
 # Βάλε το κλειδί σου εδώ
-GEMINI_API_KEY = "TO_API_KEY_SOY_EDO"
+GEMINI_API_KEY = "AIzaSyB4gLIzWq51OKAdG37vIhLL8X0Z4uNd9UU"
 
 st.set_page_config(page_title="AI Legislative Auditor", page_icon="⚖️", layout="wide")
 
@@ -79,249 +84,226 @@ HEADERS = {
 }
 
 # =============================================================================
-# 🛠️ HELPER FUNCTIONS
+# 🛠️ HELPER FUNCTIONS (API & HYBRID DOWNLOAD)
 # =============================================================================
 
-def safe_get(url, params=None):
+def get_law_data_from_api(query):
+    """Ψάχνει στο API της Βουλής και επιστρέφει όλο το JSON αντικείμενο."""
+    url = "https://www.hellenicparliament.gr/api.ashx"
+    # Αν είναι αριθμός (π.χ. 4940) ψάχνει με lawnum, αλλιώς με freetext
+    params = {"q": "laws", "format": "json"}
+    
+    if query.isdigit():
+        params["lawnum"] = query
+    else:
+        params["freetext"] = query
+        
     try:
-        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        return response
+        r = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        data = r.json()
+        # Έλεγχος αν βρέθηκαν εγγραφές
+        if data.get('TotalRecords', 0) > 0:
+            return data['Data'][0] # Επιστρέφει τον πρώτο νόμο που βρήκε
     except Exception as e:
-        return None
+        st.error(f"API Error: {e}")
+    return None
 
-def download_pdf(url, folder, prefix="doc"):
+def process_pdf_hybrid(url, file_type):
+    """
+    Κατεβάζει το PDF.
+    1. Προσπαθεί να εξάγει κείμενο (Text) με pypdf.
+    2. Αν το κείμενο είναι λίγο (<500 chars), το θεωρεί εικόνα και το ανεβάζει στο Gemini για OCR.
+    """
+    if not url: return "", None, False
+    
     try:
-        if url.startswith("/"):
+        # Διόρθωση URL
+        if not url.startswith("http"): 
             url = "https://www.hellenicparliament.gr" + url
-        res = safe_get(url)
-        if res:
-            filename = url.split("/")[-1].split("?")[0]
-            if not filename.endswith(".pdf"): filename += ".pdf"
             
-            # Αφαιρούμε επικίνδυνους χαρακτήρες από το όνομα
-            filename = "".join([c for c in filename if c.isalnum() or c in (' ', '.', '_')]).strip()
+        st.write(f"⬇️ Λήψη: {file_type}...")
+        res = requests.get(url, headers=HEADERS, timeout=60)
+        res.raise_for_status()
+        
+        # Προσπάθεια εξαγωγής κειμένου
+        text_content = ""
+        try:
+            with BytesIO(res.content) as f:
+                reader = PdfReader(f)
+                for page in reader.pages:
+                    text_content += page.extract_text() or ""
+        except:
+            pass # Αν αποτύχει το pypdf, συνεχίζουμε με OCR
             
-            save_path = os.path.join(folder, f"{prefix}_{filename}")
-            with open(save_path, "wb") as f:
-                f.write(res.content)
-            return save_path
-    except Exception:
+        clean_txt = re.sub(r'\s+', ' ', text_content).strip()
+        
+        # Λογική απόφασης: Κείμενο ή Εικόνα;
+        if len(clean_txt) > 500:
+            return clean_txt, None, False # Είναι Text PDF
+            
+        # Fallback σε OCR (Gemini Vision)
+        st.caption(f"⚠️ Το αρχείο '{file_type}' φαίνεται σκαναρισμένο. Ενεργοποίηση OCR...")
+        suffix = ".pdf"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(res.content)
+            tmp_path = tmp.name
+            
+        uploaded_file = genai.upload_file(tmp_path, mime_type="application/pdf")
+        return "", uploaded_file, True # Είναι Image PDF
+        
+    except Exception as e:
+        st.warning(f"Σφάλμα κατά την επεξεργασία του {file_type}: {e}")
+        return "", None, False
+
+def find_opengov_smart(law_title):
+    """Ψάχνει στο Google για τη διαβούλευση (Opengov)."""
+    # Αφαιρούμε κοινές λέξεις για καλύτερη αναζήτηση
+    stopwords = ["Κύρωση", "Ενσωμάτωση", "Ρυθμίσεις", "Διατάξεις", "του", "την", "και", "για", "με"]
+    words = law_title.split()
+    keywords = [w for w in words if len(w) > 3 and w not in stopwords]
+    search_query = " ".join(keywords[:6])
+    
+    query = f"site:opengov.gr {search_query} διαβούλευση"
+    # ΧΡΗΣΗ urllib.parse.quote (ΔΙΟΡΘΩΘΗΚΕ)
+    url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+    
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if "opengov.gr" in href and "google" not in href:
+                    return href
+                if "/url?q=" in href and "opengov.gr" in href:
+                    return href.split("/url?q=")[1].split("&")[0]
+    except:
         pass
     return None
 
-# =============================================================================
-# 1️⃣ API ΒΟΥΛΗΣ
-# =============================================================================
-
-def search_parliament_api(query):
-    """Αναζήτηση στο API της Βουλής."""
-    api_url = "https://www.hellenicparliament.gr/api.ashx"
-    params = {"q": "laws", "freetext": query, "pageSize": 5}
-    
-    res = safe_get(api_url, params)
-    if res:
-        try:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                law = data[0]
-                return {
-                    "id": law.get("LawId") or law.get("id"),
-                    "title": law.get("Title") or law.get("title"),
-                    "url": law.get("Url") # Ενδεχομένως να επιστρέφει URL
-                }
-        except:
-            pass
-    return None
+def scrape_opengov(url):
+    """Κατεβάζει το κείμενο από το Opengov."""
+    if not url: return ""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.content, 'html.parser')
+        # Καθαρισμός
+        for s in soup(["script", "style", "nav", "footer"]): s.decompose()
+        return re.sub(r'\s+', ' ', soup.get_text()).strip()[:20000]
+    except: 
+        return ""
 
 # =============================================================================
-# 2️⃣ OPENGOV SCAN
+# 🧠 AI ANALYSIS
 # =============================================================================
 
-def search_opengov(law_title):
-    """Google Search για Opengov."""
-    query = f"site:opengov.gr {law_title} διαβούλευση"
-    google_url = f"https://www.google.com/search?q={quote(query)}"
-    
-    res = safe_get(google_url)
-    if not res: return None, "Google Block (429)"
+def run_auditor(law_text, uploaded_files, opengov_text, metadata):
+    # Ετοιμασία Prompt με context
+    intro_text = f"""
+    ΤΑΥΤΟΤΗΤΑ ΝΟΜΟΥ:
+    {metadata}
 
-    soup = BeautifulSoup(res.text, "html.parser")
-    found_link = None
-    
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "opengov.gr" in href and "google" not in href:
-            found_link = href
-            break
-        if "/url?q=" in href and "opengov.gr" in href:
-            found_link = href.split("/url?q=")[1].split("&")[0]
-            break
-            
-    if found_link:
-        og_res = safe_get(found_link)
-        if og_res:
-            og_soup = BeautifulSoup(og_res.content, "html.parser")
-            for tag in og_soup(["script", "style", "nav", "footer"]): tag.decompose()
-            text = og_soup.get_text(separator=" ", strip=True)[:25000]
-            return found_link, text
-            
-    return None, ""
-
-# =============================================================================
-# 3️⃣ PARLIAMENT SCRAPING
-# =============================================================================
-
-def scrape_parliament_page(url, temp_dir):
-    """Scrapes PDFs from Parliament page."""
-    res = safe_get(url)
-    if not res: return []
-        
-    soup = BeautifulSoup(res.content, "html.parser")
-    pdf_files = []
-    
-    keywords = {
-        "αιτιολογική": "Aitiologiki", "σχέδιο νόμου": "Sxedio_Nomou",
-        "ψηφισθέν": "Psifisthen", "συνεπειών": "Analysi_Synepeion",
-        "γλκ": "Ekthesi_GLK", "ειδική": "Eidiki_Ekthesi"
-    }
-    
-    found_types = []
-    for link in soup.find_all("a", href=True):
-        href = link['href']
-        text = link.get_text().lower()
-        
-        if ".pdf" in href or "UserFiles" in href:
-            for key, fname in keywords.items():
-                if key in text and key not in found_types:
-                    path = download_pdf(href, temp_dir, fname)
-                    if path:
-                        pdf_files.append(path)
-                        found_types.append(key)
-                    break
-    return pdf_files
-
-# =============================================================================
-# 🧠 GEMINI ANALYSIS
-# =============================================================================
-
-def analyze_with_gemini(files, opengov_text, law_title):
-    uploaded_files = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, file_path in enumerate(files):
-        status_text.text(f"📤 Ανέβασμα: {os.path.basename(file_path)}")
-        try:
-            # ΕΔΩ ΗΤΑΝ ΤΟ ΛΑΘΟΣ ΠΡΙΝ - ΤΩΡΑ ΔΙΟΡΘΩΘΗΚΕ
-            uf = genai.upload_file(file_path, mime_type="application/pdf")
-            uploaded_files.append(uf)
-        except Exception as e:
-            st.error(f"Σφάλμα Upload για {file_path}: {e}")
-        
-        progress_bar.progress((i + 1) / len(files))
-
-    if not uploaded_files:
-        return "❌ Απέτυχε το ανέβασμα όλων των αρχείων στο AI."
-
-    status_text.text("⏳ Το AI επεξεργάζεται τα έγγραφα (OCR)...")
-    
-    # Αναμονή για processing
-    while True:
-        try:
-            states = [genai.get_file(uf.name).state.name for uf in uploaded_files]
-            if all(s == "ACTIVE" for s in states):
-                break
-            if any(s == "FAILED" for s in states):
-                st.error("Κάποιο αρχείο απέτυχε στην επεξεργασία Google AI.")
-                break
-            time.sleep(2)
-        except Exception as e:
-            st.warning(f"Καθυστέρηση στον έλεγχο κατάστασης: {e}")
-            time.sleep(2)
-    
-    status_text.text("🤖 Ο Ελεγκτής συντάσσει το πόρισμα...")
-    model = genai.GenerativeModel(model_name="gemini-1.5-pro", system_instruction=SYSTEM_INSTRUCTIONS)
-    
-    prompt = f"""
-    ΑΝΤΙΚΕΙΜΕΝΟ ΕΛΕΓΧΟΥ: {law_title}
-    
-    ΔΕΔΟΜΕΝΑ ΔΙΑΒΟΥΛΕΥΣΗΣ (OPENGOV):
+    ΚΕΙΜΕΝΟ ΑΠΟ OPENGOV (ΔΙΑΒΟΥΛΕΥΣΗ):
     {opengov_text}
-    
-    ΕΝΤΟΛΗ:
-    Διάβασε τα επισυναπτόμενα αρχεία. Συνδύασέ τα με τα δεδομένα της διαβούλευσης.
-    Βγάλε το Πόρισμα Ελέγχου βάσει του Δεκαλόγου και του Εγχειριδίου.
+
+    ΚΕΙΜΕΝΟ ΑΠΟ PDF (που διαβάστηκαν ως Text):
+    {law_text[:50000]}
     """
     
+    parts = [intro_text]
+    
+    # Προσθήκη αρχείων για OCR
+    if uploaded_files:
+        parts.append("\n--- ΑΚΟΛΟΥΘΟΥΝ ΣΚΑΝΑΡΙΣΜΕΝΑ ΕΓΓΡΑΦΑ ΓΙΑ ΕΛΕΓΧΟ ---\n")
+        for f in uploaded_files:
+            parts.append(f)
+            
+    parts.append(SYSTEM_INSTRUCTIONS) # Το αυστηρό ερωτηματολόγιο
+    
     try:
-        response = model.generate_content(
-            uploaded_files + [prompt],
-            request_options={"timeout": 600}
-        )
+        # ΧΡΗΣΗ ΤΟΥ GEMINI 2.0 FLASH (ΔΙΟΡΘΩΘΗΚΕ)
+        model = genai.GenerativeModel('models/gemini-2.0-flash') 
+        
+        # Έλεγχος ετοιμότητας αρχείων
+        if uploaded_files:
+            st.info("⏳ Αναμονή για επεξεργασία αρχείων από Google...")
+            while True:
+                states = [genai.get_file(uf.name).state.name for uf in uploaded_files]
+                if all(s == "ACTIVE" for s in states): break
+                if any(s == "FAILED" for s in states): st.error("Αποτυχία OCR"); return "Error"
+                time.sleep(2)
+        
+        response = model.generate_content(parts)
         return response.text
     except Exception as e:
-        return f"Σφάλμα AI κατά τη σύνταξη: {e}"
+        return f"Σφάλμα AI: {e}"
 
 # =============================================================================
 # 🖥️ MAIN UI
 # =============================================================================
 
 def main():
-    st.title("🏛️ AI Legislative Auditor (Τριπλή Σάρωση)")
-    st.markdown("---")
+    st.title("🏛️ AI Legislative Auditor (Hybrid Engine)")
+    st.caption("API Βουλής + Hybrid OCR + Full Checks + Gemini 2.0 Flash")
+    
+    query = st.text_input("🔍 Αριθμός Νόμου (π.χ. 4940) ή Λέξεις Κλειδιά:")
+    
+    if st.button("Έναρξη Ελέγχου", type="primary") and query:
+        
+        # 1. API SEARCH & METADATA
+        with st.spinner("1️⃣ Αναζήτηση στο API της Βουλής..."):
+            api_data = get_law_data_from_api(query)
+            
+        if not api_data:
+            st.error("❌ Δεν βρέθηκε ο νόμος στο API.")
+            return
+            
+        title = api_data.get('Title', 'Άγνωστος Τίτλος')
+        st.success(f"✅ Βρέθηκε: {title}")
+        
+        # 2. OPENGOV SEARCH
+        og_url = find_opengov_smart(title)
+        og_text = ""
+        if og_url:
+            st.info(f"🌍 Opengov Link: {og_url}")
+            og_text = scrape_opengov(og_url)
+        else:
+            st.warning("⚠️ Δεν βρέθηκε αυτόματα η διαβούλευση.")
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        law_query = st.text_input("🔍 Αριθμός Νόμου ή Τίτλος (π.χ. 4940/2022):")
-        manual_url = st.text_input("🔗 (Προαιρετικό) Χειροκίνητο Link Βουλής:")
-    with col2:
-        st.write("##")
-        start_btn = st.button("🚀 Έναρξη Ελέγχου", type="primary")
-
-    if start_btn and (law_query or manual_url):
-        temp_dir = tempfile.mkdtemp()
-        try:
-            # 1. API Check
-            law_data = None
-            if not manual_url:
-                with st.spinner("1️⃣ Αναζήτηση στο API Βουλής..."):
-                    law_data = search_parliament_api(law_query)
+        # 3. DOWNLOAD FILES (Hybrid Method)
+        # Το API της Βουλής επιστρέφει λίστα 'LawPhotocopy' με τα URLs
+        files_list = api_data.get('LawPhotocopy', [])
+        st.write(f"📂 Βρέθηκαν {len(files_list)} αρχεία στο API.")
+        
+        text_content = ""
+        ocr_files = []
+        
+        progress = st.progress(0)
+        
+        for i, f in enumerate(files_list):
+            url = f.get('File')
+            ftype = f.get('FileType', 'Unknown')
             
-            law_title = law_data.get("title", law_query) if law_data else law_query
-            final_url = manual_url
-            if law_data and law_data.get("id") and not final_url:
-                final_url = f"https://www.hellenicparliament.gr/Nomothetiko-Ergo/Anazitisi-Nomothetikou-Ergou?law_id={law_data['id']}"
+            if url:
+                # ΕΔΩ ΕΙΝΑΙ Η ΜΑΓΕΙΑ: Κατεβάζει και αποφασίζει (Text vs Image)
+                txt, file_obj, is_ocr = process_pdf_hybrid(url, ftype)
+                
+                if is_ocr:
+                    ocr_files.append(file_obj)
+                elif txt:
+                    text_content += f"\n--- ΑΡΧΕΙΟ: {ftype} ---\n{txt}\n"
             
-            # 2. OpenGov Check
-            og_link, og_text = None, ""
-            with st.spinner("2️⃣ Αναζήτηση Διαβούλευσης (OpenGov)..."):
-                og_link, og_text = search_opengov(law_title)
+            progress.progress((i + 1) / len(files_list))
             
-            # 3. Scraping
-            pdfs = []
-            if final_url:
-                with st.spinner("3️⃣ Λήψη Εγγράφων από Βουλή..."):
-                    pdfs = scrape_parliament_page(final_url, temp_dir)
-            
-            # Checklist UI
-            st.markdown("### ✅ Αποτελέσματα Σάρωσης:")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Link Βουλής", "✅" if final_url else "❌")
-            c2.metric("OpenGov", "✅" if og_link else "❌")
-            c3.metric("Αρχεία PDF", len(pdfs))
-            
-            if pdfs:
-                st.divider()
-                st.subheader("🤖 Πόρισμα Ελέγχου")
-                report = analyze_with_gemini(pdfs, og_text, law_title)
-                st.markdown(report)
-                st.download_button("💾 Κατέβασμα Πορίσματος", report, file_name="audit_report.txt")
-            else:
-                st.error("❌ Δεν βρέθηκαν αρχεία PDF. Ελέγξτε τα κριτήρια αναζήτησης.")
-
-        finally:
-            shutil.rmtree(temp_dir)
+        st.success(f"Επεξεργασία ολοκληρώθηκε: {len(ocr_files)} αρχεία για OCR, {len(text_content)} χαρακτήρες κειμένου.")
+        
+        # 4. AUDIT
+        st.divider()
+        with st.spinner("🤖 Ο Ελεγκτής εξετάζει τα δεδομένα..."):
+            audit_report = run_auditor(text_content, ocr_files, og_text, json.dumps(api_data, ensure_ascii=False))
+            st.markdown(audit_report)
+            st.download_button("💾 Κατέβασμα Πορίσματος", audit_report, file_name="audit.md")
 
 if __name__ == "__main__":
     main()
