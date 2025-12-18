@@ -104,8 +104,41 @@ def get_law_data_from_api(query):
         params["freetext"] = query
         
     try:
-        r = requests.get(url, params=params, headers=HEADERS, timeout=15)
-        data = r.json()
+
+import json
+
+def get_law_data_from_api(query):
+    url = "https://www.hellenicparliament.gr/api.ashx"
+    params = {"q": "laws", "format": "json"}
+    if query.isdigit():
+        params["lawnum"] = query
+    else:
+        params["freetext"] = query
+
+    try:
+        r = requests.get(url, params=params, headers=HEADERS, timeout=30)
+        if r.status_code != 200:
+            st.error(f"API HTTP {r.status_code}: {r.text[:200]}")
+            return None
+
+        try:
+            data = r.json()
+        except json.JSONDecodeError as e:
+            st.error(f"API δεν επέστρεψε έγκυρο JSON: {e}")
+            st.text(r.text[:500])
+            return None
+
+        if isinstance(data, dict) and data.get("TotalRecords", 0) > 0:
+            items = data.get("Data") or data.get("data") or []
+            if items:
+                return items[0]
+        st.warning("Το API γύρισε άδειο αποτέλεσμα.")
+        return None
+
+    except Exception as e:
+        st.error(f"API Error: {e}")
+        return None
+
         # Έλεγχος αν βρέθηκαν εγγραφές
         if data.get('TotalRecords', 0) > 0:
             return data['Data'][0] # Επιστρέφει τον πρώτο νόμο που βρήκε
@@ -228,7 +261,7 @@ def run_auditor(law_text, uploaded_files, opengov_text, metadata):
     
     try:
         # ΧΡΗΣΗ ΤΟΥ GEMINI 2.0 FLASH (ΔΙΟΡΘΩΘΗΚΕ)
-        model = genai.GenerativeModel('models/gemini-pro-latest') 
+        model = genai.GenerativeModel('models/gemini-2.5-pro') 
         
         # Έλεγχος ετοιμότητας αρχείων
         if uploaded_files:
