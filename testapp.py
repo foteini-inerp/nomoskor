@@ -1,285 +1,202 @@
-import streamlit as st
-import google.generativeai as genai
-from pypdf import PdfReader
-import requests
-from bs4 import BeautifulSoup
-from googlesearch import search
-from io import BytesIO
-import json
-import re
-import tempfile
+import os
 import time
+import requests
+import re
+from bs4 import BeautifulSoup
+import google.generativeai as genai
+from google.api_core import exceptions
 
-# --- 1. ΡΥΘΜΙΣΕΙΣ ---
-st.set_page_config(page_title="Legislative Auditor AI (Anti-Block)", page_icon=":balance_scale:", layout="wide")
+# =============================================================================
+# ⚙️ ΡΥΘΜΙΣΕΙΣ ΧΡΗΣΤΗ
+# =============================================================================
+GOOGLE_API_KEY = "TO_API_KEY_SOY_EDO"  # <--- ΒΑΛΕ ΤΟ ΚΛΕΙΔΙ ΣΟΥ ΕΔΩ
+DOWNLOAD_FOLDER = "nomosxedio_downloads"
 
-st.markdown("""
-<style>
-    .score-card { background-color: #e8f5e9; padding: 20px; border-radius: 10px; text-align: center; border: 2px solid #2e7d32; }
-    .big-score { font-size: 48px; font-weight: bold; color: #2e7d32; }
-    .stButton>button { width: 100%; background-color: #1565C0; color: white; border-radius: 5px; }
-    .manual-badge { background-color: #e0f7fa; color: #006064; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; border: 1px solid #006064;}
-    .ocr-badge { background-color: #fff3e0; color: #e65100; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; }
-</style>
-""", unsafe_allow_html=True)
+# Ορίζουμε το "Super-Prompt" του Αυστηρού Ελεγκτή
+SYSTEM_INSTRUCTIONS = """
+Ενεργείς ως Ανώτατος Νομικός Ελεγκτής (Legal Auditor) και Γλωσσολόγος.
+Σου δίνονται κείμενα νομοθεσίας, εκθέσεις και στοιχεία διαβούλευσης.
+Η αποστολή σου είναι ο ΕΛΕΓΧΟΣ ΠΟΙΟΤΗΤΑΣ ΚΑΙ ΝΟΜΙΜΟΤΗΤΑΣ.
 
-st.title("⚖️ Legislative Auditor AI")
-st.caption("V26: Anti-Block (Παράκαμψη προστασίας 403)")
+--- ΔΟΜΗ ΤΗΣ ΕΚΘΕΣΗΣ ΕΛΕΓΧΟΥ (AUDIT REPORT) ---
 
-# --- 2. SIDEBAR ---
-with st.sidebar:
-    st.header("Ρυθμίσεις")
-    api_key = None
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            api_key = st.secrets["GEMINI_API_KEY"]
-            st.success("✅ API Key loaded!")
-    except: pass
+### 1. 📋 ΕΛΕΓΧΟΣ ΔΙΑΔΙΚΑΣΙΑΣ (CHECKLIST ΚΑΛΗΣ ΝΟΜΟΘΕΤΗΣΗΣ)
+Απάντησε ΑΥΣΤΗΡΑ με [ΝΑΙ / ΟΧΙ / ΜΕΡΙΚΩΣ] και τεκμηρίωση:
+* **Διαβούλευση:** Διήρκεσε >14 ημέρες; (Δες ημερομηνίες Opengov). Ελήφθησαν υπόψη τα σχόλια;
+* **Ακρόαση Φορέων:** Υπήρξε ουσιαστικός χρόνος στη Βουλή ή ήταν τυπική;
+* **"Επιχρύσωση" (Gold-plating):** Προστέθηκαν εθνικά βάρη σε ευρωπαϊκές οδηγίες;
+* **Άσχετες Τροπολογίες:** Υπάρχουν "άσχετες" ή "φωτογραφικές" διατάξεις (συνήθως στο τέλος του νόμου);
+* **Ανάλυση Κόστους-Ωφέλειας:** Υπάρχουν ποσοτικά στοιχεία (αριθμοί/ευρώ) για το ΟΦΕΛΟΣ ή μόνο αερολογίες;
 
-    if not api_key:
-        api_key = st.text_input("Google Gemini API Key", type="password")
+### 2. ⚖️ ΕΛΕΓΧΟΣ ΠΕΡΙΕΧΟΜΕΝΟΥ (DEEP DIVE)
+* **Φαινόμενο "Λευκής Επιταγής":** Κατάγραψε πόσες φορές ανατίθεται σε Υπουργό να αποφασίσει τα σημαντικά (π.χ. "καθορίζονται οι όροι, οι προϋποθέσεις..."). Είναι κρίσιμα θέματα;
+* **Διοικητικό Βάρος (Red Tape):** Εντόπισε διαδικασίες που απαιτούν υπερβολική χαρτούρα/χρόνο από τον πολίτη/υπάλληλο.
+* **Αρχή Αναγκαιότητας:** Τεκμηριώνεται γιατί χρειάζεται ΝΕΟΣ νόμος και όχι τροποποίηση του παλιού;
+
+### 3. 🔍 ΓΛΩΣΣΙΚΟΣ & ΝΟΜΟΤΕΧΝΙΚΟΣ ΕΛΕΓΧΟΣ
+* **"Ξύλινη Γλώσσα":** Εντόπισε αόριστους όρους management (π.χ. "βέλτιστη", "εξορθολογισμός", "καινοτομία") χωρίς νομικό ορισμό.
+* **Πολυνομία/Λαβύρινθος:** Εντόπισε αλυσίδες παραπομπών (π.χ. "άρθρο Χ του ν.Ψ όπως τροποποιήθηκε με το Ζ").
+* **Συντακτική Πολυπλοκότητα:** Εντόπισε προτάσεις άνω των 50 λέξεων που κουράζουν.
+
+### 4. 📝 ΤΕΛΙΚΟ ΠΟΡΙΣΜΑ
+Βαθμολόγησε (0-10) και δώσε 3 συγκεκριμένες συστάσεις.
+"""
+
+# =============================================================================
+# 🛠️ ΕΡΓΑΛΕΙΑ (SCRAPING & SEARCH)
+# =============================================================================
+
+def google_search_opengov(law_number_or_title):
+    """Ψάχνει στο Google για τη διαβούλευση στο Opengov."""
+    print(f"🔎 Αναζήτηση διαβούλευσης για: {law_number_or_title}...")
+    # Εδώ κάνουμε μια "ψευδο-αναζήτηση" για το παράδειγμα. 
+    # Στην πραγματικότητα, για να ψάξεις το Google θες το Custom Search API ή scraping (που συχνά μπλοκάρεται).
+    # Θα χρησιμοποιήσουμε μια τεχνική scraping στο Google Search results (προσοχή: μπορεί να μπλοκαριστεί).
     
-    if api_key: 
-        genai.configure(api_key=api_key)
-
-# --- 3. FUNCTIONS ---
-
-# Κεφαλίδες για να μοιάζουμε με Browser (Chrome) και να μην τρώμε 403
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "el-GR,el;q=0.9,en;q=0.8",
-    "Connection": "keep-alive"
-}
-
-def get_law_from_api(lawnum):
-    """Ανάκτηση από API Βουλής με Anti-Block Headers."""
-    url = "https://www.hellenicparliament.gr/api.ashx"
-    clean_num = lawnum.split("/")[0].strip()
-    params = {"q": "laws", "lawnum": clean_num, "format": "json"}
+    query = f"site:opengov.gr {law_number_or_title} διαβούλευση"
+    url = f"https://www.google.com/search?q={query}"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    
     try:
-        # Προσθήκη headers για να αποφύγουμε το 403
-        r = requests.get(url, params=params, headers=HEADERS, timeout=30)
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # Προσπάθεια εύρεσης συνδέσμου opengov
+        links = []
+        for a in soup.find_all('a', href=True):
+            if 'opengov.gr' in a['href']:
+                clean_link = a['href'].split('&')[0].replace('/url?q=', '')
+                if clean_link not in links:
+                    links.append(clean_link)
         
-        # Έλεγχος αν πήραμε λάθος
-        if r.status_code == 403:
-            st.error("⚠️ Η Βουλή μπλόκαρε το αίτημα (403). Δοκιμάστε να δώσετε το Link χειροκίνητα στο πεδίο 2.")
+        if links:
+            print(f"   Βρέθηκε πιθανό link διαβούλευσης: {links[0]}")
+            return links[0]
+        else:
+            print("   Δεν βρέθηκε link στο Opengov.")
             return None
-            
-        data = r.json()
-        if data.get('TotalRecords', 0) > 0:
-            return data['Data'][0]
     except Exception as e:
-        print(f"API Error: {e}")
-    return None
+        print(f"⚠️ Σφάλμα αναζήτησης: {e}")
+        return None
 
-def find_opengov_smart(law_title):
-    stopwords = ["Κύρωση", "Ενσωμάτωση", "Ρυθμίσεις", "Διατάξεις", "του", "την", "και", "για", "με"]
-    words = law_title.split()
-    keywords = [w for w in words if len(w) > 3 and w not in stopwords]
-    search_query = " ".join(keywords[:6])
-    query = f"site:opengov.gr {search_query}"
-    try:
-        for url in search(query, num_results=2):
-            if "opengov.gr" in url: return url
-    except: pass
-    return None
-
-def scrape_opengov(url):
+def fetch_opengov_content(url):
+    """Κατεβάζει το κείμενο από τη σελίδα του Opengov."""
     if not url: return ""
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.content, 'html.parser')
-        return re.sub(r'\s+', ' ', soup.get_text()).strip()[:20000]
-    except: return ""
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.content, 'html.parser')
+        
+        # Προσπάθεια εύρεσης ημερομηνιών
+        text = soup.get_text(separator=' ', strip=True)
+        return text[:20000] # Επιστρέφουμε τους πρώτους 20k χαρακτήρες (συνήθως εκεί είναι οι ημερομηνίες)
+    except:
+        return ""
 
-def ocr_scanned_pdf(file_bytes):
+def download_parliament_documents(law_id_or_url):
+    """
+    (Προαιρετικό) Εδώ θα μπορούσε να μπει κώδικας που κατεβάζει PDF από τη Βουλή.
+    Επειδή το site της Βουλής είναι δύσκολο στο scraping, θα υποθέσουμε ότι 
+    ο χρήστης έχει βάλει τα αρχεία στον φάκελο, ή δίνει direct links.
+    """
+    # Για την οικονομία του κώδικα, ελέγχουμε τον τοπικό φάκελο.
+    if not os.path.exists(DOWNLOAD_FOLDER):
+        os.makedirs(DOWNLOAD_FOLDER)
+    
+    files = [os.path.join(DOWNLOAD_FOLDER, f) for f in os.listdir(DOWNLOAD_FOLDER) if f.endswith('.pdf')]
+    return files
+
+# =============================================================================
+# 🧠 AI PROCESSING (GEMINI)
+# =============================================================================
+
+def analyze_with_gemini(files, opengov_text, law_title):
+    genai.configure(api_key=GOOGLE_API_KEY)
+    
+    # Upload Files
+    uploaded_files = []
+    print(f"📤 Ανέβασμα {len(files)} αρχείων στο AI...")
+    for file_path in files:
+        print(f"   ... {os.path.basename(file_path)}")
+        uf = genai.upload_file(file_path, mime_type="application/pdf")
+        uploaded_files.append(uf)
+
+    # Wait for Processing (OCR)
+    print("⏳ Το AI μελετά τα έγγραφα (OCR & Parsing)...")
+    while True:
+        if all(f.state.name == "ACTIVE" for f in [genai.get_file(uf.name) for uf in uploaded_files]):
+            break
+        print(".", end="", flush=True)
+        time.sleep(2)
+    print("\n✅ Έτοιμο για ανάλυση.")
+
+    # Model Setup
+    model = genai.GenerativeModel(model_name="gemini-1.5-pro", system_instruction=SYSTEM_INSTRUCTIONS)
+
+    # Context Prompt
+    context_prompt = f"""
+    Αντικείμενο Ελέγχου: {law_title}
+    
+    --- ΣΤΟΙΧΕΙΑ ΑΠΟ ΔΙΑΒΟΥΛΕΥΣΗ (OPENGOV) ---
+    {opengov_text}
+    
+    --- ΕΝΤΟΛΗ ---
+    Προχώρα στον πλήρη έλεγχο των επισυναπτόμενων αρχείων PDF σε συνδυασμό με τα παραπάνω στοιχεία διαβούλευσης.
+    Εφάρμοσε αυστηρά τον "Δεκάλογο" και το "Εγχειρίδιο Νομοπαρασκευαστικής Μεθοδολογίας".
+    """
+
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-        uploaded_file = genai.upload_file(tmp_path, mime_type="application/pdf")
-        time.sleep(2) 
-        model = genai.GenerativeModel("models/gemini-2.0-flash")
         response = model.generate_content(
-            [uploaded_file, "Extract all text from this document verbatim."],
+            uploaded_files + [context_prompt],
             request_options={"timeout": 600}
         )
         return response.text
-    except: return ""
+    except Exception as e:
+        return f"❌ Σφάλμα κατά την ανάλυση AI: {e}"
 
-def process_pdf_smart(url, ftype):
-    if not url: return "", "N/A"
-    try:
-        if not url.startswith("http"): url = "https://www.hellenicparliament.gr" + url
-        
-        # Χρήση HEADERS και εδώ
-        res = requests.get(url, headers=HEADERS, timeout=60)
-        
-        if res.status_code == 403:
-            return "", "403 BLOCKED"
-            
-        file_bytes = res.content
-        
-        # 1. Text extraction
-        text_content = ""
-        with BytesIO(file_bytes) as f:
-            reader = PdfReader(f)
-            for page in reader.pages:
-                text_content += page.extract_text() or ""
-        
-        clean_txt = re.sub(r'\s+', ' ', text_content).strip()
-        
-        if len(clean_txt) > 200:
-            return clean_txt, "TEXT"
-        else:
-            ocr_txt = ocr_scanned_pdf(file_bytes)
-            return ocr_txt, "OCR"
-    except:
-        return "", "ERR"
+# =============================================================================
+# 🚀 MAIN PROGRAM
+# =============================================================================
 
-def run_auditor_certified(law_text, reports_text, amendments_text, opengov_text, metadata):
-    try:
-        model = genai.GenerativeModel('models/gemini-2.0-flash')
-        
-        knowledge_base = """
-        ΒΑΣΙΚΕΣ ΑΡΧΕΣ ΑΠΟ ΤΟ ΕΓΧΕΙΡΙΔΙΟ ΝΟΜΟΠΑΡΑΣΚΕΥΑΣΤΙΚΗΣ ΜΕΘΟΔΟΛΟΓΙΑΣ & ΟΔΗΓΟ ΑΣΥΡ:
-        1. Η Ανάλυση Συνεπειών Ρύθμισης (ΑΣΥΡ) περιέχει υποχρεωτικά: Ενότητα Δ (Γενικές Συνέπειες), Ενότητα Ε (Διαβούλευση), Ενότητα ΣΤ (Νομιμότητα).
-        2. "Επιχρύσωση" (Gold-plating): Προσθήκη βαρών πέραν των απαιτούμενων από την ΕΕ.
-        3. Διαβούλευση: Ελάχιστη διάρκεια 14 ημέρες.
-        """
-
-        prompt = f"""
-        Ενεργείς ως Πιστοποιημένος Νομικός Ελεγκτής (Certified Auditor).
-        Κρίνεις με βάση τον "Δεκάλογο Καλής Νομοθέτησης".
-        
-        CONTEXT: {knowledge_base}
-        METADATA: {metadata}
-        OPENGOV: {opengov_text[:15000]}
-        
-        [ΚΕΙΜΕΝΑ ΝΟΜΟΥ]
-        {law_text[:50000]}
-        
-        [ΕΚΘΕΣΕΙΣ (ΑΣΥΡ, ΓΛΚ)]
-        {reports_text[:80000]}
-        
-        [ΤΡΟΠΟΛΟΓΙΕΣ]
-        {amendments_text[:20000]}
-        
-        ΚΡΙΤΗΡΙΑ (1=ΝΑΙ, 0.5=ΜΕΡΙΚΩΣ, 0=ΟΧΙ). Δώσε score_val και reason.
-
-        1. ΠΡΟ-ΚΟΙΝΟΒΟΥΛΕΥΤΙΚΗ ΔΙΑΒΟΥΛΕΥΣΗ (>14 ημέρες); (Ψάξε ημερομηνίες στο OpenGov ή στην "Ενότητα Ε" της ΑΣΥΡ).
-        2. ΕΚΘΕΣΗ ΔΙΑΒΟΥΛΕΥΣΗΣ (Ποιότητα); (Υπάρχει στην ΑΣΥΡ Ενότητα Ε; Παρουσιάζει σχόλια;).
-        3. ΧΡΟΝΟΣ ΑΚΡΟΑΣΗΣ ΦΟΡΕΩΝ; (Υπήρχε χρόνος στη Βουλή;).
-        4. ΤΡΟΠΟΛΟΓΙΕΣ (Συνάφεια/Χρόνος); (Είναι άσχετες ή εκπρόθεσμες;).
-        5. ΕΠΙΧΡΥΣΩΣΗ (Gold-plating); (Υπάρχει αδικαιολόγητη επέκταση;).
-        6. ΝΗΣΙΩΤΙΚΟΤΗΤΑ; (Ειδική μνεία;).
-        7. ΑΝΑΛΥΣΗ ΚΟΣΤΟΥΣ (ΓΛΚ); (Υπάρχει έκθεση ΓΛΚ με νούμερα;).
-        8. ΑΠΛΟΥΣΤΕΥΣΗ; (Ρητή μείωση βαρών;).
-        9. ΕΞΟΥΣΙΟΔΟΤΗΣΕΙΣ; (Είναι περιορισμένες;).
-        10. ΠΟΙΟΤΗΤΑ ΓΛΩΣΣΑΣ; (Σαφής;).
-
-        OUTPUT JSON ONLY: {{ "criteria": [...], "summary": "..." }}
-        """
-        response = model.generate_content(prompt)
-        txt = response.text.strip().replace("```json", "").replace("```", "")
-        return json.loads(txt.strip())
-    except Exception as e: return {"error": str(e)}
-
-# --- 4. UI ---
-
-st.subheader("🔍 Πλήρης Έλεγχος")
-
-col1, col2 = st.columns([1, 1])
-with col1:
-    l_input = st.text_input("1. Αριθμός Νόμου", placeholder="π.χ. 4940")
-with col2:
-    l_link = st.text_input("2. Link Βουλής (Προαιρετικό - αν κολλήσει το API)", placeholder="https://...")
-
-start = st.button("🚀 Έναρξη Ανάλυσης", type="primary")
-
-if start:
-    if not api_key: st.error("Missing Key"); st.stop()
+def main():
+    print("="*60)
+    print("🏛️  AI LEGAL AUDITOR - GREEK LEGISLATION  🏛️")
+    print("="*60)
     
-    status = st.status("⚙️ Εκκίνηση...", expanded=True)
-    
-    # 1. API CALL
-    status.write("🏛️ Ανάκτηση από API...")
-    law_data = None
-    
-    if l_input:
-        law_data = get_law_from_api(l_input)
-    
-    if not law_data:
-        status.update(label="❌ Πρόβλημα API.", state="error")
-        st.error("Δεν βρέθηκαν δεδομένα. Η Βουλή ίσως μπλοκάρει τις κλήσεις ή ο αριθμός είναι λάθος. Αν έχετε το Link του νομοσχεδίου, χρησιμοποιήστε το δεύτερο πεδίο (λειτουργία υπό κατασκευή για scraping).")
-        st.stop()
-        
-    title = law_data.get('Title', '')
-    st.success(f"**{title}**")
-    
-    # 2. OPENGOV
-    status.write("🌍 Αναζήτηση OpenGov...")
-    og_url = find_opengov_smart(title)
-    og_text = scrape_opengov(og_url) if og_url else ""
-    if og_url: st.info(f"🔗 OpenGov: {og_url}")
+    law_input = input("👉 Δώσε Αριθμό Νόμου ή Τίτλο (π.χ. 4940/2022): ").strip()
+    parliament_url = input("👉 (Προαιρετικά) Link Βουλής: ").strip()
 
-    # 3. FILES
-    status.write("📥 Ανάγνωση Αρχείων...")
-    files = law_data.get('LawPhotocopy', [])
-    
-    txt_law = ""
-    txt_reports = ""
-    txt_amendments = ""
-    processed_log = []
-    
-    prog = st.progress(0)
-    for i, f in enumerate(files):
-        url = f.get('File')
-        ftype = str(f.get('FileType', '')).lower()
-        
-        if url:
-            text, mode = process_pdf_smart(url, ftype)
-            processed_log.append(f"{ftype[:40]} -> {mode}")
-            
-            if text:
-                if "νόμου" in ftype or "ψηφισθέν" in ftype:
-                    txt_law += text
-                elif "τροπολογία" in ftype:
-                    txt_amendments += f"\n--- ΤΡΟΠΟΛΟΓΙΑ ---\n" + text
-                else:
-                    txt_reports += f"\n--- ΕΓΓΡΑΦΟ ({ftype}) ---\n" + text
-        
-        prog.progress((i + 1) / len(files))
+    # 1. Ψάχνουμε Διαβούλευση
+    opengov_url = google_search_opengov(law_input)
+    opengov_data = ""
+    if opengov_url:
+        print(f"   Λήψη δεδομένων από: {opengov_url}")
+        opengov_data = fetch_opengov_content(opengov_url)
+    else:
+        print("⚠️ Δεν βρέθηκαν δεδομένα διαβούλευσης αυτόματα.")
 
-    with st.expander("Λεπτομέρειες Επεξεργασίας"):
-        for p in processed_log: st.text(p)
+    # 2. Εντοπισμός Αρχείων PDF
+    # Εδώ υποθέτουμε ότι τα έχεις ήδη κατεβάσει στον φάκελο, 
+    # ή θα μπορούσε να μπει script που τα κατεβάζει από το Link της Βουλής.
+    pdf_files = download_parliament_documents(parliament_url)
+    
+    if not pdf_files:
+        print(f"❌ Δεν βρέθηκαν PDF στον φάκελο '{DOWNLOAD_FOLDER}'.")
+        print("   Παρακαλώ κατέβασε τα PDF (Νόμο, Εκθέσεις) σε αυτόν τον φάκελο και ξανατρέξε το.")
+        return
 
-    # 4. AUDIT
-    status.write("🧠 Αξιολόγηση...")
-    meta = json.dumps(law_data, ensure_ascii=False)
-    
-    res = run_auditor_certified(txt_law, txt_reports, txt_amendments, og_text, meta)
-    
-    if "error" in res:
-        status.update(label="❌ AI Error", state="error"); st.error(res['error']); st.stop()
-        
-    status.update(label="✅ Ολοκληρώθηκε!", state="complete", expanded=False)
-    
-    # RESULTS
-    score = sum([c.get('score_val', 0) * 10 for c in res.get('criteria', [])])
-    c1, c2 = st.columns([1,2])
-    score_html = f"""<div class="score-card"><h3>Βαθμολογία</h3><div class="big-score">{int(score)}/100</div></div>"""
-    with c1: st.markdown(score_html, unsafe_allow_html=True)
-    with c2: st.info(res.get('summary'))
-    st.divider()
-    
-    for c in res.get('criteria', []):
-        val = c.get('score_val', 0)
-        icon = "✅" if val == 1 else ("⚠️" if val == 0.5 else "❌")
-        extra = ""
-        if "Ενότητα" in c.get('reason', ''): extra = " <span class='manual-badge'>ΑΣΥΡ Checked</span>"
-        if "OCR" in str(processed_log): extra += " <span class='ocr-badge'>Vision</span>"
+    # 3. Εκτέλεση Ελέγχου
+    audit_result = analyze_with_gemini(pdf_files, opengov_data, law_input)
 
-        with st.expander(f"{icon} {c.get('title')} ({int(val*10)}/10)"):
-            st.markdown(f"**Αιτιολογία:** {c.get('reason')}" + extra, unsafe_allow_html=True)
+    # 4. Αποτέλεσμα
+    print("\n" + "="*60)
+    print("📋  ΠΟΡΙΣΜΑ ΕΛΕΓΧΟΥ  📋")
+    print("="*60)
+    print(audit_result)
+    
+    # Αποθήκευση
+    with open(f"Audit_Report_{law_input.replace('/','-')}.txt", "w", encoding="utf-8") as f:
+        f.write(audit_result)
+    print(f"\n✅ Η έκθεση αποθηκεύτηκε στο αρχείο txt.")
+
+if __name__ == "__main__":
+    main()
