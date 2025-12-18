@@ -200,16 +200,39 @@ def find_opengov_smart(law_title):
     return None
 
 def scrape_opengov(url):
-    """Κατεβάζει το κείμενο από το Opengov."""
-    if not url: return ""
+    """Κατεβάζει το κείμενο από το Opengov και επιστρέφει κείμενο + ημερομηνίες διαβούλευσης."""
+    if not url:
+        return "", []
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(r.content, 'html.parser')
-        # Καθαρισμός
-        for s in soup(["script", "style", "nav", "footer"]): s.decompose()
-        return re.sub(r'\s+', ' ', soup.get_text()).strip()[:20000]
-    except: 
-        return ""
+        # Καθαρισμός θορύβου
+        for s in soup(["script", "style", "nav", "footer"]):
+            s.decompose()
+
+        full_text = re.sub(r'\s+', ' ', soup.get_text()).strip()
+
+        # Κείμενο ΜΟΝΟ από σημεία που αναφέρονται ρητά σε διαβούλευση
+        consultation_sections = []
+        for p in soup.find_all(["p", "div", "span", "li"]):
+            t = p.get_text(" ", strip=True)
+            if any(kw in t.lower() for kw in [
+                "δημόσια διαβούλευση",
+                "δημοσια διαβουλευση",
+                "διαβούλευση",
+                "διαβούλευσης",
+                "διάρκεια διαβούλευσης",
+                "έως", "μεχρι"
+            ]):
+                consultation_sections.append(t)
+
+        consultation_text = " ".join(consultation_sections)
+        dates = extract_dates(consultation_text)
+
+        return full_text[:20000], dates
+    except:
+        return "", []
+
 
 # =============================================================================
 # 🧠 AI ANALYSIS
