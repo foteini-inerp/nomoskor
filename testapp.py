@@ -19,7 +19,7 @@ from google.api_core import exceptions
 # =============================================================================
 
 # Βάλε το κλειδί σου εδώ
-GEMINI_API_KEY = "AIzaSyDj0m9d1hs3eWaHUWhHeLhsmlfKYt4hgz4"
+GEMINI_API_KEY = ""
 
 st.set_page_config(page_title="AI Legislative Auditor", page_icon="⚖️", layout="wide")
 
@@ -347,3 +347,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
