@@ -79,8 +79,13 @@ SYSTEM_INSTRUCTIONS = """
 """
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "el-GR,el;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Referer": "https://www.google.com/"
 }
 
 # =============================================================================
@@ -99,7 +104,7 @@ def get_law_data_from_api(query):
         params["freetext"] = query
         
     try:
-        r = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        r = requests.get(url, params=params, headers=HEADERS, timeout=30)
         data = r.json()
         # Έλεγχος αν βρέθηκαν εγγραφές
         if data.get('TotalRecords', 0) > 0:
@@ -223,7 +228,7 @@ def run_auditor(law_text, uploaded_files, opengov_text, metadata):
     
     try:
         # ΧΡΗΣΗ ΤΟΥ GEMINI 2.0 FLASH (ΔΙΟΡΘΩΘΗΚΕ)
-        model = genai.GenerativeModel('models/gemini-2.0-flash') 
+        model = genai.GenerativeModel('models/veo-3.0-generate-001') 
         
         # Έλεγχος ετοιμότητας αρχείων
         if uploaded_files:
